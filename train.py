@@ -22,7 +22,7 @@ def train(model, dataloader, use_amp, scaler, epoch):
     for batch_idx, (inputs, targets) in enumerate(dataloader):
         inputs, targets = inputs.to(device), targets.to(device)
 
-        with torch.cuda.amp.autocast_mode(enabled=use_amp):
+        with torch.cuda.amp.autocast(enabled=use_amp):
             outputs = model(inputs)
             loss = criterion(outputs, targets)
 
