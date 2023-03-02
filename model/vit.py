@@ -1,15 +1,10 @@
 import torch
 import torch.nn.functional as F
 
-from torch import nn
-from torch import Tensor
-# from torchvision.transforms import Compose, Resize, ToTensor
+from torch import nn, Tensor
 
-from einops import rearrange, reduce, repeat
+from einops import rearrange, repeat
 from einops.layers.torch import Rearrange, Reduce
-
-# import matplotlib.pyplot as plt
-# from PIL import Image
 
 
 # Embedding
@@ -56,8 +51,9 @@ class MultiHeadAttention(nn.Module):
             fill_value = torch.finfo(torch.float32).min
             energy.mask_fill(~mask, fill_value)
 
-        scaling = self.emb_size ** (1/2)
-        att = F.softmax(energy / scaling, dim=-1)
+        scaling = self.emb_size ** 0.5
+        scaled = torch.div(energy, scaling)
+        att = F.softmax(scaled, dim=-1)
         att = self.att_drop(att)
 
         # Sum up over the third axis
