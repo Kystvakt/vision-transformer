@@ -12,14 +12,14 @@ from model.vit import ViT
 from scheduler import CosineAnnealingWarmUpRestarts
 
 
-def train(model, train_loader, use_amp, scaler, epoch):
+def train(model, dataloader, use_amp, scaler, epoch):
     print(f"\nEpoch: {epoch}")
     model.train()
     train_loss = 0
     total = 0
     correct = 0
 
-    for batch_idx, (inputs, targets) in enumerate(train_loader):
+    for batch_idx, (inputs, targets) in enumerate(dataloader):
         inputs, targets = inputs.to(device), targets.to(device)
 
         with torch.cuda.amp.autocast_mode(enabled=use_amp):
@@ -39,7 +39,7 @@ def train(model, train_loader, use_amp, scaler, epoch):
     return train_loss / (batch_idx + 1)
 
 
-def test(model, test_loader, scaler, epoch):
+def test(model, dataloader, scaler, epoch):
     global best_acc
     model.eval()
     test_loss = 0
@@ -47,7 +47,7 @@ def test(model, test_loader, scaler, epoch):
     correct = 0
 
     with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(test_loader):
+        for batch_idx, (inputs, targets) in enumerate(dataloader):
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, targets)
@@ -58,8 +58,8 @@ def test(model, test_loader, scaler, epoch):
             correct += predicted.eq(targets).sum().item()
 
     # Checkpoint
-    acc = correct / total * 100.
-    if acc > best_acc:
+    accuracy = correct / total * 100.
+    if accuracy > best_acc:
         state = {
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
@@ -70,7 +70,7 @@ def test(model, test_loader, scaler, epoch):
         torch.save(
             state, './checkpoint/' + 'ckpt.pt'
         )
-        best_acc = acc
+        best_acc = accuracy
 
     # Log
     os.makedirs('log', exist_ok=True)
@@ -111,11 +111,11 @@ if __name__ == '__main__':
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
     # Model
-    model = ViT()
+    net = ViT()
 
     # Loss function and optimizer
     criterion = CrossEntropyLoss()
-    optimizer = Adam(model.parameters(), lr=args.lr)
+    optimizer = Adam(net.parameters(), lr=args.lr)
 
     # Use custom CosineAnnealingWarmUpRestarts
     scheduler = CosineAnnealingWarmUpRestarts(optimizer, args.n_epochs)
@@ -126,12 +126,12 @@ if __name__ == '__main__':
     list_loss = []
     list_acc = []
 
-    model.cuda()
+    net.cuda()
 
     for epoch in range(start_epoch, args.n_epochs):
         start = time.time()
-        train_loss = train(model, train_loader, True, scaler)
-        val_loss, acc = test(model, test_loader, scaler, epoch)
+        train_loss = train(net, train_loader, True, scaler, epoch)
+        val_loss, acc = test(net, test_loader, scaler, epoch)
 
         scheduler.step(epoch - 1)
 
