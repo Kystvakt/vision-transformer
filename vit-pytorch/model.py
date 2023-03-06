@@ -1,4 +1,6 @@
+import torch
 from torch import nn
+from torch import Tensor
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange, Reduce
 
@@ -8,7 +10,7 @@ from einops.layers.torch import Rearrange, Reduce
 # Attention block
 class Attention(nn.Module):
     def __init__(self, config):
-        super.__init__()
+        super().__init__()
 
         self.num_heads = config.num_heads
         self.scale_factor = config.dim_head ** -0.5
@@ -53,13 +55,14 @@ class ResidualAdd(nn.Module):
 
 
 # Layer Normalization
-# class LayerNorm(nn.Module):
-#     def __init__(self, config):
-#         super().__init__()
-#         self.norm = nn.LayerNorm(config.norm_dim)
-#
-#     def forward(self, x):
-#         return self.norm(x)
+class LayerNorm(nn.Module):
+    def __init__(self, config, fn):
+        super().__init__()
+        self.norm = nn.LayerNorm(config.emb_size)
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        return self.norm(self.fn(x), **kwargs)
 
 
 # Fully-connected feed-forward network
@@ -94,16 +97,15 @@ class Transformer(nn.Module):
         for _ in range(config.depth):
             self.layers.append(
                 nn.ModuleList([
-                    Attention(config),
-                    nn.LayerNorm(config.emb_size),
-                    FeedForward(config),
-                    LayerNorm(config.emb_size)
+                    LayerNorm(config, ResidualAdd(Attention(config))),
+                    LayerNorm(config, ResidualAdd(FeedForward(config)))
                 ])
             )
 
     def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
+        for attn, ff in enumerate(self.layers):
+            x = attn(x)
+            x = ff(x)
         return x
 
 
@@ -111,8 +113,8 @@ class Transformer(nn.Module):
 class PatchEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
-        img_h, img_w = config.size if isinstance(config.size, tuple) else (config.size, config.size)
-        p_h, p_w = config.size if isinstance(config.size, tuple) else (config.size, config.size)
+        img_h, img_w = config.img_size if isinstance(config.img_size, tuple) else (config.img_size, config.img_size)
+        p_h, p_w = config.patch_size if isinstance(config.patch_size, tuple) else (config.patch_size, config.patch_size)
 
         assert img_h % p_h == 0 and img_w % p_w == 0, "Image dimensions must be divisible by the patch size"
 
@@ -121,11 +123,11 @@ class PatchEmbedding(nn.Module):
             nn.Conv2d(config.channel, config.emb_size, kernel_size=config.patch_size, stride=config.patch_size),
             Rearrange('b c (h) (w) -> b (h w) c')
         )
-        self.cls_tkn = nn.Parameter(torch.randn(1, 1), config.emb_size)
+        self.cls_tkn = nn.Parameter(torch.randn(1, 1, config.emb_size))
         self.pos_emb = nn.Parameter(torch.randn(1, (img_h // p_h) * (img_w // p_w) + 1, config.emb_size))
         self.dropout = nn.Dropout(config.emb_dropout)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x):
         b, _, _, _ = x.shape
         x = self.projection(x)
         cls_tkn = repeat(self.cls_tkn, '() n c -> b n c', b=b)
@@ -140,14 +142,17 @@ class PatchEmbedding(nn.Module):
 #         super().__init__()
 #         self.net = nn.Sequential(
 #             Reduce('b n c -> b c', reduction='mean'),
-#             nn.LayerNorm(config.emb_size),
+#             LayerNorm(config),
 #             nn.Linear(config.emb_size, config.num_classes)
 #         )
+#
+#     def forward(self, x):
+#         return self.net(x)
 class ClassificationHead(nn.Sequential):
     def __init__(self, config):
         super().__init__(
             Reduce('b n c -> b c', reduction='mean'),
-            nn.LayerNorm(config.emb_size),
+            LayerNorm(config),
             nn.Linear(config.emb_size, config.num_classes)
         )
 
