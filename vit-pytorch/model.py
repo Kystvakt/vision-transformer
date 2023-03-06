@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 from torch import Tensor
@@ -103,7 +104,7 @@ class Transformer(nn.Module):
             )
 
     def forward(self, x):
-        for attn, ff in enumerate(self.layers):
+        for attn, ff in self.layers:
             x = attn(x)
             x = ff(x)
         return x
@@ -151,8 +152,7 @@ class PatchEmbedding(nn.Module):
 class ClassificationHead(nn.Sequential):
     def __init__(self, config):
         super().__init__(
-            Reduce('b n c -> b c', reduction='mean'),
-            LayerNorm(config),
+            LayerNorm(config, Reduce('b n c -> b c', reduction='mean')),
             nn.Linear(config.emb_size, config.num_classes)
         )
 
