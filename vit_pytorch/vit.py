@@ -1,150 +1,144 @@
+import math
 import torch
-import torch.nn.functional as F
+from torch import nn
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange, Reduce
-from torch import nn, Tensor
 
 
-# Embedding
-class PatchEmbedding(nn.Module):
-    def __init__(self, in_channels: int = 3, patch_size: int = 6, emb_size: int = 768, img_size: int = 224):
-        self.patch_size = patch_size
+# Attention block
+class Attention(nn.Module):
+    def __init__(self, config):
         super().__init__()
-        self.projection = nn.Sequential(
-            nn.Conv2d(in_channels, emb_size, kernel_size=patch_size, stride=patch_size),
-            Rearrange('b e (h) (w) -> b (h w) e'),
-        )
-        self.cls_token = nn.Parameter(torch.randn(1, 1, emb_size))
-        self.positions = nn.Parameter(torch.randn((img_size // patch_size)**2 + 1, emb_size))
 
-    def forward(self, x: Tensor) -> Tensor:
-        b, _, _, _ = x.shape
-        x = self.projection(x)
-        cls_tokens = repeat(self.cls_token, '() n e -> b n e', b=b)
-        x = torch.cat([cls_tokens, x], dim=1)
-        x += self.positions
-        return x
+        self.num_heads = config.num_heads
+        self.scale_factor = (config.emb_size // config.num_heads) ** -0.5
+        self.qkv = nn.Linear(config.emb_size, config.emb_size * 3)
+        self.softmax = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(config.dropout)
+        self.project = nn.Linear(config.emb_size, config.emb_size)
 
+    def forward(self, x):
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.num_heads), self.qkv(x).chunk(3, dim=-1))
 
-# MHA
-class MultiHeadAttention(nn.Module):
-    def __init__(self, emb_size: int = 768, num_heads: int = 8, dropout: float = 0):
-        super().__init__()
-        self.emb_size = emb_size
-        self.num_heads = num_heads
+        dot = torch.einsum('bhqd, bhkd -> bhqk', q, k)  # batch, num_heads, query_len, key_len
+        attn = self.softmax(dot * self.scale_factor)
+        attn = self.dropout(attn)
 
-        # Fuse the queries, keys and values in one matrix
-        self.qkv = nn.Linear(emb_size, emb_size * 3)
-        self.att_drop = nn.Dropout(dropout)
-        self.projection = nn.Linear(emb_size, emb_size)
-
-    def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
-        # Split keys, queries and values in num_heads
-        qkv = rearrange(self.qkv(x), 'b n (h d qkv) -> (qkv) b h n d', h=self.num_heads, qkv=3)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-
-        # Sum up over the last axis
-        energy = torch.einsum('bhqd, bhkd -> bhqk', q, k)  # batch, num_heads, query_len, key_len
-        if mask is not None:
-            fill_value = torch.finfo(torch.float32).min
-            energy.masked_fill(~mask, fill_value)
-
-        scaling = self.emb_size ** 0.5
-        scaled = torch.div(energy, scaling)
-        att = F.softmax(scaled, dim=-1)
-        att = self.att_drop(att)
-
-        # Sum up over the third axis
-        out = torch.einsum('bhal, bhlv -> bhav', att, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
-        out = self.projection(out)
-        return out
+        output = torch.einsum('bhal, bhlv -> bhav', attn, v)
+        output = rearrange(output, 'b h n d -> b n (h d)')
+        output = self.project(output)
+        output = self.dropout(output)
+        return output
 
 
-# Residual block
+# Activation function
+class NewGELU(nn.Module):
+    """
+    Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT).
+    Reference: Gaussian Error Linear Units (GELU) paper: https://arxiv.org/abs/1606.08415
+    """
+    def forward(self, x):
+        return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
+
+
+# Residual
 class ResidualAdd(nn.Module):
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
 
     def forward(self, x, **kwargs):
-        res = x
-        x = self.fn(x, **kwargs)
-        x += res
+        return self.fn(x, **kwargs) + x
+
+
+# Layer Normalization
+class LayerNorm(nn.Module):
+    def __init__(self, config, fn):
+        super().__init__()
+        self.norm = nn.LayerNorm(config.emb_size)
+        self.fn = fn
+
+    def forward(self, x, **kwargs):
+        return self.norm(self.fn(x), **kwargs)
+
+
+# Fully-connected feed-forward network
+class FeedForward(nn.Sequential):
+    def __init__(self, config):
+        super().__init__(
+            nn.Linear(config.emb_size, config.hidden_dim),
+            NewGELU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim, config.emb_size),
+            nn.Dropout(config.dropout)
+        )
+
+
+# Transformer block
+class Transformer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(config.depth):
+            self.layers.append(
+                nn.ModuleList([
+                    LayerNorm(config, ResidualAdd(Attention(config))),
+                    LayerNorm(config, ResidualAdd(FeedForward(config)))
+                ])
+            )
+
+    def forward(self, x):
+        for attn, ff in self.layers:
+            x = attn(x)
+            x = ff(x)
         return x
 
 
-# Feed forward MLP
-class FeedForwardBlock(nn.Sequential):
-    def __init__(self, emb_size: int, expansion: int = 4, drop_p: float = 0.):
-        super().__init__(
-            nn.Linear(emb_size, expansion * emb_size),
-            nn.GELU(),
-            nn.Dropout(drop_p),
-            nn.Linear(expansion * emb_size, emb_size),
+# Patch embeddings
+class PatchEmbedding(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        img_h, img_w = config.img_size if isinstance(config.img_size, tuple) else (config.img_size, config.img_size)
+        p_h, p_w = config.patch_size if isinstance(config.patch_size, tuple) else (config.patch_size, config.patch_size)
+
+        assert img_h % p_h == 0 and img_w % p_w == 0, "Image dimensions must be divisible by the patch size"
+
+        self.patch_size = config.patch_size
+        self.projection = nn.Sequential(
+            nn.Conv2d(config.channel, config.emb_size, kernel_size=config.patch_size, stride=config.patch_size),
+            Rearrange('b c (h) (w) -> b (h w) c')
         )
+        self.cls_tkn = nn.Parameter(torch.randn(1, 1, config.emb_size))
+        self.pos_emb = nn.Parameter(torch.randn(1, (img_h // p_h) * (img_w // p_w) + 1, config.emb_size))
+        self.dropout = nn.Dropout(config.emb_dropout)
+
+    def forward(self, x):
+        b, _, _, _ = x.shape
+        x = self.projection(x)
+        cls_tkn = repeat(self.cls_tkn, '() n c -> b n c', b=b)
+        x = torch.cat((cls_tkn, x), dim=1)
+        x += self.pos_emb
+        return self.dropout(x)
 
 
-# Encoder block
-class TransformerEncoderBlock(nn.Sequential):
-    def __init__(
-            self,
-            emb_size: int = 768,
-            drop_p: float = 0.,
-            forward_expansion: int = 4,
-            forward_drop_p: float = 0.,
-            **kwargs
-    ):
-        super().__init__(
-            ResidualAdd(
-                nn.Sequential(
-                    nn.LayerNorm(emb_size),
-                    MultiHeadAttention(emb_size, **kwargs),
-                    nn.Dropout(drop_p)
-                )
-            ),
-            ResidualAdd(
-                nn.Sequential(
-                    nn.LayerNorm(emb_size),
-                    FeedForwardBlock(
-                        emb_size, expansion=forward_expansion, drop_p=forward_drop_p
-                    ),
-                    nn.Dropout(drop_p),
-                )
-            )
-        )
-
-
-# Encoder
-class TransformerEncoder(nn.Sequential):
-    def __init__(self, depth: int = 12, **kwargs):
-        super().__init__(*[TransformerEncoderBlock(**kwargs) for _ in range(depth)])
-
-
-# Head
+# Classification head
 class ClassificationHead(nn.Sequential):
-    def __init__(self, emb_size: int = 768, n_classes: int = 1000):
+    def __init__(self, config):
         super().__init__(
-            Reduce('b n e -> b e', reduction='mean'),
-            nn.LayerNorm(emb_size),
-            nn.Linear(emb_size, n_classes)
+            LayerNorm(config, Reduce('b n c -> b c', reduction='mean')),
+            nn.Linear(config.emb_size, config.num_classes)
         )
 
 
-# Summary
-class ViT(nn.Sequential):
-    def __init__(
-            self,
-            in_channels: int = 3,
-            patch_size: int = 16,
-            emb_size: int = 768,
-            img_size: int = 224,
-            depth: int = 12,
-            n_classes: int = 1000,
-            **kwargs
-    ):
-        super().__init__(
-            PatchEmbedding(in_channels, patch_size, emb_size, img_size),
-            TransformerEncoder(depth, emb_size=emb_size, **kwargs),
-            ClassificationHead(emb_size, n_classes)
-        )
+class ViT(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.patch_embedding = PatchEmbedding(config)
+        self.transformer = Transformer(config)
+        self.classification_head = ClassificationHead(config)
+
+    def forward(self, img):
+        x = self.patchembedding(img)
+        x = self.transformer(x)
+        x = self.classificationhead(x)
+        return x
