@@ -1,12 +1,9 @@
 import math
 import torch
 from torch import nn
-from torch import Tensor
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange, Reduce
 
-
-### The following are the experimental elements. ###
 
 # Attention block
 class Attention(nn.Module):
@@ -14,14 +11,13 @@ class Attention(nn.Module):
         super().__init__()
 
         self.num_heads = config.num_heads
-        self.scale_factor = config.dim_head ** -0.5
-
+        self.scale_factor = (config.emb_size // config.num_heads) ** -0.5
         self.qkv = nn.Linear(config.emb_size, config.emb_size * 3)
         self.softmax = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(config.dropout)
         self.project = nn.Linear(config.emb_size, config.emb_size)
 
-    def forward(self, x: Tensor, mask: Tensor = None) -> Tensor:
+    def forward(self, x):
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.num_heads), self.qkv(x).chunk(3, dim=-1))
 
         dot = torch.einsum('bhqd, bhkd -> bhqk', q, k)  # batch, num_heads, query_len, key_len
@@ -35,7 +31,7 @@ class Attention(nn.Module):
         return output
 
 
-# New GELU
+# Activation function
 class NewGELU(nn.Module):
     """
     Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT).
@@ -67,19 +63,6 @@ class LayerNorm(nn.Module):
 
 
 # Fully-connected feed-forward network
-# class FeedForward(nn.Module):
-#     def __init__(self, config):
-#         super().__init__()
-#         self.net = nn.Sequential(
-#             nn.Linear(config.emb_size, config.hidden_dim),
-#             NewGELU(),
-#             nn.Dropout(config.dropout),
-#             nn.Linear(config.hidden_dim, config.emb_size),
-#             nn.Dropout(config.dropout)
-#         )
-#
-#     def forward(self, x):
-#         return self.net(x)
 class FeedForward(nn.Sequential):
     def __init__(self, config):
         super().__init__(
@@ -89,6 +72,7 @@ class FeedForward(nn.Sequential):
             nn.Linear(config.hidden_dim, config.emb_size),
             nn.Dropout(config.dropout)
         )
+
 
 # Transformer block
 class Transformer(nn.Module):
@@ -138,17 +122,6 @@ class PatchEmbedding(nn.Module):
 
 
 # Classification head
-# class ClassificationHead(nn.Module):
-#     def __init__(self, config):
-#         super().__init__()
-#         self.net = nn.Sequential(
-#             Reduce('b n c -> b c', reduction='mean'),
-#             LayerNorm(config),
-#             nn.Linear(config.emb_size, config.num_classes)
-#         )
-#
-#     def forward(self, x):
-#         return self.net(x)
 class ClassificationHead(nn.Sequential):
     def __init__(self, config):
         super().__init__(
@@ -160,9 +133,9 @@ class ClassificationHead(nn.Sequential):
 class ViT(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.patchembedding = PatchEmbedding(config)
+        self.patch_embedding = PatchEmbedding(config)
         self.transformer = Transformer(config)
-        self.classificationhead = ClassificationHead(config)
+        self.classification_head = ClassificationHead(config)
 
     def forward(self, img):
         x = self.patchembedding(img)

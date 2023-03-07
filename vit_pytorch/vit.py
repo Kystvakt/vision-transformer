@@ -1,10 +1,8 @@
 import torch
 import torch.nn.functional as F
-
-from torch import nn, Tensor
-
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange, Reduce
+from torch import nn, Tensor
 
 
 # Embedding
@@ -49,7 +47,7 @@ class MultiHeadAttention(nn.Module):
         energy = torch.einsum('bhqd, bhkd -> bhqk', q, k)  # batch, num_heads, query_len, key_len
         if mask is not None:
             fill_value = torch.finfo(torch.float32).min
-            energy.mask_fill(~mask, fill_value)
+            energy.masked_fill(~mask, fill_value)
 
         scaling = self.emb_size ** 0.5
         scaled = torch.div(energy, scaling)
