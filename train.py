@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from torch.nn import CrossEntropyLoss
 from torch.optim import Adam
 
-from model.vit import ViT
+from vit_pytorch.vit import ViT
 from scheduler import CosineAnnealingWarmUpRestarts
 
 
@@ -19,6 +19,7 @@ def train(model, dataloader, use_amp, scaler, epoch):
     total = 0
     correct = 0
 
+    batch_idx = 0
     for batch_idx, (inputs, targets) in enumerate(dataloader):
         inputs, targets = inputs.to(device), targets.to(device)
 
