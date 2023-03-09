@@ -4,7 +4,7 @@ import torchmetrics
 from torch.optim import Adam
 
 from .utils import CosineAnnealingWarmUpRestarts
-from .vit2 import ViT
+from .vit import ViT
 
 
 class LitViT(pl.LightningModule):
