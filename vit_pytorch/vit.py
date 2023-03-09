@@ -1,8 +1,9 @@
 import math
+
 import torch
-from torch import nn
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange, Reduce
+from torch import nn
 
 
 # Attention block
@@ -37,7 +38,8 @@ class NewGELU(nn.Module):
     Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT).
     Reference: Gaussian Error Linear Units (GELU) paper: https://arxiv.org/abs/1606.08415
     """
-    def forward(self, x):
+    @staticmethod
+    def forward(x):
         return 0.5 * x * (1.0 + torch.tanh(math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))))
 
 
@@ -57,9 +59,13 @@ class LayerNorm(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(config.emb_size)
         self.fn = fn
+        self.pre_LM = config.pre_LM
 
     def forward(self, x, **kwargs):
-        return self.norm(self.fn(x), **kwargs)
+        if self.pre_LM:
+            return self.fn(self.norm(x), **kwargs)
+        else:
+            return self.norm(self.fn(x), **kwargs)
 
 
 # Fully-connected feed-forward network
@@ -138,7 +144,7 @@ class ViT(nn.Module):
         self.classification_head = ClassificationHead(config)
 
     def forward(self, img):
-        x = self.patchembedding(img)
+        x = self.patch_embedding(img)
         x = self.transformer(x)
-        x = self.classificationhead(x)
+        x = self.classification_head(x)
         return x
