@@ -1,9 +1,10 @@
 import math
+
 from torch.optim.lr_scheduler import _LRScheduler
 
 
 class Config:
-    "To Do: Set default values"
+    # TODO: Set default values
     def __init__(self, **kwargs):
         self.__dict__.update(**kwargs)
 
